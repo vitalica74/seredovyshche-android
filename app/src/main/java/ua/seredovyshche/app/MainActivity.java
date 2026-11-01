@@ -83,12 +83,14 @@ public class MainActivity extends Activity {
                             if (!filename.matches("[a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9 _().-]{1,120}\\.(zip|json)")) filename = "project.zip";
                             byte[] bytes = Base64.decode(data.getString("base64"), Base64.DEFAULT);
                             if (bytes.length > 10_000_000) throw new IllegalArgumentException("File too large");
+                            final String exportFilename = filename;
                             runOnUiThread(() -> {
                                 pendingExport = bytes;
                                 Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                                 i.addCategory(Intent.CATEGORY_OPENABLE);
-                                i.setType(filename.endsWith(".json") ? "application/json" : "application/zip");
-                                i.putExtra(Intent.EXTRA_TITLE, filename);
+
+                                i.setType(exportFilename.endsWith(".json") ? "application/json" : "application/zip");
+                                i.putExtra(Intent.EXTRA_TITLE, exportFilename);
                                 try {
                                     startActivityForResult(i, EXPORT_CODE);
                                 } catch (Exception ex) {
