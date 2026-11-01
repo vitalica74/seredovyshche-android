@@ -30,6 +30,15 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        getWindow().getDecorView().setOnApplyWindowInsetsListener(
+            (view, insets) -> {
+                android.graphics.Insets bars = insets.getInsets(
+                    android.view.WindowInsets.Type.systemBars()
+                );
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                return insets;
+            }
+        );
         web = new WebView(this);
         setContentView(web);
         WebSettings settings = web.getSettings();
