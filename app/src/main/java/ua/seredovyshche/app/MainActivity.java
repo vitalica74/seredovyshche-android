@@ -88,7 +88,6 @@ public class MainActivity extends Activity {
                                 pendingExport = bytes;
                                 Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                                 i.addCategory(Intent.CATEGORY_OPENABLE);
-
                                 i.setType(exportFilename.endsWith(".json") ? "application/json" : "application/zip");
                                 i.putExtra(Intent.EXTRA_TITLE, exportFilename);
                                 try {
