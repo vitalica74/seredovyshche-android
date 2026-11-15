@@ -24,6 +24,16 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceResponse;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.view.View;
+import android.graphics.Color;
+import android.content.SharedPreferences;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.view.View;
+import android.graphics.Color;
+import android.util.TypedValue;
 import java.io.ByteArrayInputStream;
 import java.net.URLDecoder;
 import org.json.JSONArray;
@@ -40,8 +50,13 @@ public class MainActivity extends Activity {
     private WebView web;
     private WebView runtime;
     private FrameLayout root;
+    private LinearLayout runtimeShell;
+    private int runtimeInitialHistoryLength = 1;
     private final Map<String, byte[]> runtimeFiles = new HashMap<>();
     private String runtimeHost = "";
+    private String runtimeProjectId = "";
+    private LinearLayout runtimePanel;
+    private SharedPreferences sessionPrefs;
     private ValueCallback<Uri[]> uploadCallback;
     private byte[] pendingExport;
     private String pendingProjectId;
@@ -57,6 +72,7 @@ public class MainActivity extends Activity {
                 return insets;
             }
         );
+        sessionPrefs = getSharedPreferences("runtime_sessions_v1", MODE_PRIVATE);
         root = new FrameLayout(this);
         setContentView(root);
         web = new WebView(this);
@@ -118,7 +134,7 @@ public class MainActivity extends Activity {
                                 }
                                 if (!prepared.containsKey("index.html")) throw new IllegalArgumentException("No index.html");
                                 String host = "p" + projectId.replace("-", "").toLowerCase() + ".seredovyshche.invalid";
-                                runOnUiThread(() -> launchRuntime(host, prepared));
+                                runOnUiThread(() -> launchRuntime(projectId, host, prepared));
                                 return;
                             }
                             if (!"export".equals(data.optString("type"))) return;
@@ -217,9 +233,17 @@ public class MainActivity extends Activity {
         if (name.endsWith(".woff")) return "font/woff";
         return "application/octet-stream";
     }
-    private void launchRuntime(String host, Map<String, byte[]> files) {
+    private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
+        // Keep the existing WebView alive when the same program is reopened.
+        // This preserves SPA state, unfinished forms and scroll position in memory.
+        if (runtime != null && host.equals(runtimeHost)) {
+            showRuntime();
+            return;
+        }
         closeRuntime();
         runtimeHost = host;
+        runtimeInitialHistoryLength = 1;
+        runtimeProjectId = projectId;
         runtimeFiles.clear(); runtimeFiles.putAll(files);
         runtime = new WebView(this);
         WebSettings s = runtime.getSettings();
@@ -228,7 +252,29 @@ public class MainActivity extends Activity {
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         runtime.setWebChromeClient(new WebChromeClient());
+        runtimePanel = new LinearLayout(this);
+        runtimePanel.setOrientation(LinearLayout.VERTICAL);
+        runtimePanel.setBackgroundColor(Color.rgb(18, 25, 40));
+        TextView homeButton = new TextView(this);
+        homeButton.setText("‹  Середовище");
+        homeButton.setTextColor(Color.WHITE);
+        homeButton.setTextSize(13);
+        homeButton.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        int pad = (int)(12 * getResources().getDisplayMetrics().density);
+        homeButton.setPadding(pad, 0, pad, 0);
+        homeButton.setContentDescription("Повернутися до Середовища");
+        homeButton.setOnClickListener(v -> closeRuntime());
+        runtimePanel.addView(homeButton, new LinearLayout.LayoutParams(-1, (int)(34 * getResources().getDisplayMetrics().density)));
+        runtimePanel.addView(runtime, new LinearLayout.LayoutParams(-1, 0, 1));
         runtime.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                if (url.equals("https://" + host + "/index.html")) {
+                    view.evaluateJavascript("String(history.length)", value -> {
+                        try { runtimeInitialHistoryLength = Math.max(1, Integer.parseInt(value.replace("\"", ""))); }
+                        catch (Exception ignored) { }
+                    });
+                }
+            }
             @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 if (!"https".equals(u.getScheme()) || !host.equals(u.getHost()))
@@ -250,20 +296,59 @@ public class MainActivity extends Activity {
                 return !"https".equals(u.getScheme()) || !host.equals(u.getHost());
             }
         });
-        root.addView(runtime);
-        web.setVisibility(android.view.View.GONE);
+        runtimeShell = new LinearLayout(this);
+        runtimeShell.setOrientation(LinearLayout.VERTICAL);
+        runtimeShell.setBackgroundColor(Color.rgb(15, 23, 42));
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(Color.rgb(25, 35, 53));
+        TextView exit = new TextView(this);
+        exit.setText("‹  Середовище");
+        exit.setTextColor(Color.WHITE);
+        exit.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        exit.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        int pad = (int) (12 * getResources().getDisplayMetrics().density);
+        exit.setPadding(pad, 0, pad, 0);
+        exit.setContentDescription("Повернутися до Середовища");
+        exit.setOnClickListener(v -> hideRuntime());
+        bar.addView(exit, new LinearLayout.LayoutParams(-2, (int)(42 * getResources().getDisplayMetrics().density)));
+        runtimeShell.addView(bar);
+        runtimeShell.addView(runtime, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(runtimeShell);
+        showRuntime();
         runtime.loadUrl("https://" + host + "/index.html");
-        Toast.makeText(this, "Програма запущена. Назад — до Середовища", Toast.LENGTH_SHORT).show();
+
+    }
+    private void showRuntime() {
+        if (runtimeShell != null) runtimeShell.setVisibility(View.VISIBLE);
+        if (web != null) web.setVisibility(View.GONE);
+
+    }
+    private void hideRuntime() {
+        if (runtimeShell != null) runtimeShell.setVisibility(View.GONE);
+        if (web != null) web.setVisibility(View.VISIBLE);
+
     }
     private void closeRuntime() {
         if (runtime != null) {
-            root.removeView(runtime); runtime.stopLoading(); runtime.destroy(); runtime = null;
+            if (runtimeShell != null) root.removeView(runtimeShell);
+            runtime.stopLoading(); runtime.destroy(); runtime = null;
+            runtimeShell = null;
         }
         if (web != null) web.setVisibility(android.view.View.VISIBLE);
-        runtimeFiles.clear(); runtimeHost = "";
+        runtimeFiles.clear(); runtimeHost = ""; runtimeProjectId = ""; visibleRuntimeHost = "";
     }
     @Override public void onBackPressed() {
-        if (runtime != null) { closeRuntime(); return; }
+        if (runtime != null && runtimeShell != null && runtimeShell.getVisibility() == View.VISIBLE) {
+            // SPA navigation with pushState does not always appear in canGoBack().
+            // history.length includes same-document history entries.
+            runtime.evaluateJavascript("(function(){return history.length > " + runtimeInitialHistoryLength + " ? 'back' : 'home'})()", result -> {
+                if (runtime == null || runtimeShell == null || runtimeShell.getVisibility() != View.VISIBLE) return;
+                if ("\"back\"".equals(result)) runtime.evaluateJavascript("history.back()", null);
+                else hideRuntime();
+            });
+            return;
+        }
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
     @Override protected void onDestroy() {
