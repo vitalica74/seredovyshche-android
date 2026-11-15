@@ -336,7 +336,7 @@ public class MainActivity extends Activity {
             runtimeShell = null;
         }
         if (web != null) web.setVisibility(android.view.View.VISIBLE);
-        runtimeFiles.clear(); runtimeHost = ""; runtimeProjectId = ""; visibleRuntimeHost = "";
+        runtimeFiles.clear(); runtimeHost = ""; runtimeProjectId = ""; 
     }
     @Override public void onBackPressed() {
         if (runtime != null && runtimeShell != null && runtimeShell.getVisibility() == View.VISIBLE) {
