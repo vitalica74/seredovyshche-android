@@ -265,7 +265,6 @@ public class MainActivity extends Activity {
         homeButton.setContentDescription("Повернутися до Середовища");
         homeButton.setOnClickListener(v -> closeRuntime());
         runtimePanel.addView(homeButton, new LinearLayout.LayoutParams(-1, (int)(34 * getResources().getDisplayMetrics().density)));
-        runtimePanel.addView(runtime, new LinearLayout.LayoutParams(-1, 0, 1));
         runtime.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
                 if (url.equals("https://" + host + "/index.html")) {
