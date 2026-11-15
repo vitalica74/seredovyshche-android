@@ -17,6 +17,9 @@ import androidx.webkit.WebViewFeature;
 import androidx.webkit.WebMessageCompat;
 import androidx.webkit.JavaScriptReplyProxy;
 import java.io.OutputStream;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Arrays;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import org.json.JSONObject;
@@ -27,6 +30,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private ValueCallback<Uri[]> uploadCallback;
     private byte[] pendingExport;
+    private String pendingProjectId;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -86,6 +90,7 @@ public class MainActivity extends Activity {
                             final String exportFilename = filename;
                             runOnUiThread(() -> {
                                 pendingExport = bytes;
+                                pendingProjectId = data.optString("projectId", "");
                                 Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                                 i.addCategory(Intent.CATEGORY_OPENABLE);
                                 i.setType(exportFilename.endsWith(".json") ? "application/json" : "application/zip");
@@ -110,16 +115,50 @@ public class MainActivity extends Activity {
                 uploadCallback = null;
             }
         } else if (requestCode == EXPORT_CODE) {
+            boolean verified = false;
+            String reason = "Експорт скасовано";
             if (resultCode == RESULT_OK && data != null && data.getData() != null && pendingExport != null) {
-                try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
-                    if (out == null) throw new Exception("No output stream");
-                    out.write(pendingExport);
-                    Toast.makeText(this, "Файл збережено", Toast.LENGTH_SHORT).show();
-                } catch (Exception e) { Toast.makeText(this, "Не вдалося зберегти файл", Toast.LENGTH_LONG).show(); }
+                Uri uri = data.getData();
+                try {
+                    try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        if (out == null) throw new Exception("No output stream");
+                        out.write(pendingExport);
+                        out.flush();
+                    }
+                    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                    byte[] expected = digest.digest(pendingExport);
+                    digest.reset();
+                    int count = 0;
+                    try (InputStream in = getContentResolver().openInputStream(uri)) {
+                        if (in == null) throw new Exception("Readback unavailable");
+                        byte[] buffer = new byte[8192];
+                        int n;
+                        while ((n = in.read(buffer)) != -1) {
+                            digest.update(buffer, 0, n);
+                            count += n;
+                        }
+                    }
+                    verified = count == pendingExport.length && Arrays.equals(expected, digest.digest());
+                    if (!verified) throw new Exception("Checksum mismatch");
+                    Toast.makeText(this, "ZIP записано та перевірено", Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    reason = e.getMessage();
+                    Toast.makeText(this, "Не вдалося перевірити копію", Toast.LENGTH_LONG).show();
+                }
+            }
+            if (pendingProjectId != null && !pendingProjectId.isEmpty()) {
+                if (verified) {
+                    String escapedId = JSONObject.quote(pendingProjectId);
+                    web.evaluateJavascript("window.seredovyshcheBackupVerified("+escapedId+")", null);
+                } else {
+                    web.evaluateJavascript("window.seredovyshcheBackupFailed("+JSONObject.quote(reason)+")", null);
+                }
             }
             pendingExport = null;
+            pendingProjectId = null;
         }
     }
+
     @Override public void onBackPressed() {
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
