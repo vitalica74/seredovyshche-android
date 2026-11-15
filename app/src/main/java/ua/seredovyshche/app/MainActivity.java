@@ -17,6 +17,16 @@ import androidx.webkit.WebViewFeature;
 import androidx.webkit.WebMessageCompat;
 import androidx.webkit.JavaScriptReplyProxy;
 import java.io.OutputStream;
+import java.util.Map;
+import java.util.HashMap;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceResponse;
+import android.widget.FrameLayout;
+import java.io.ByteArrayInputStream;
+import java.net.URLDecoder;
+import org.json.JSONArray;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -28,6 +38,10 @@ public class MainActivity extends Activity {
     private static final String HOME = "https://appassets.androidplatform.net/assets/web/index.html";
     private static final int IMPORT_CODE = 41, EXPORT_CODE = 42;
     private WebView web;
+    private WebView runtime;
+    private FrameLayout root;
+    private final Map<String, byte[]> runtimeFiles = new HashMap<>();
+    private String runtimeHost = "";
     private ValueCallback<Uri[]> uploadCallback;
     private byte[] pendingExport;
     private String pendingProjectId;
@@ -43,8 +57,10 @@ public class MainActivity extends Activity {
                 return insets;
             }
         );
+        root = new FrameLayout(this);
+        setContentView(root);
         web = new WebView(this);
-        setContentView(web);
+        root.addView(web);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -82,6 +98,29 @@ public class MainActivity extends Activity {
                         if (!isMainFrame || message.getData() == null) return;
                         try {
                             JSONObject data = new JSONObject(message.getData());
+                            if ("launch".equals(data.optString("type"))) {
+                                String projectId = data.optString("projectId", "");
+                                JSONObject files = data.getJSONObject("files");
+                                if (!projectId.matches("[0-9a-fA-F-]{36}") || files.length() > 300) return;
+                                Map<String, byte[]> prepared = new HashMap<>();
+                                int total = 0;
+                                java.util.Iterator<String> keys = files.keys();
+                                while (keys.hasNext()) {
+                                    String path = keys.next();
+                                    if (!safePath(path)) throw new IllegalArgumentException("Unsafe path");
+                                    String value = files.getString(path);
+                                    byte[] bytes = value.startsWith("__SEREDOVYSHCHE_BASE64__:")
+                                        ? Base64.decode(value.substring("__SEREDOVYSHCHE_BASE64__:".length()), Base64.DEFAULT)
+                                        : value.getBytes(StandardCharsets.UTF_8);
+                                    total += bytes.length;
+                                    if (total > 3_000_000) throw new IllegalArgumentException("Project too large");
+                                    prepared.put(path, bytes);
+                                }
+                                if (!prepared.containsKey("index.html")) throw new IllegalArgumentException("No index.html");
+                                String host = "p" + projectId.replace("-", "").toLowerCase() + ".seredovyshche.invalid";
+                                runOnUiThread(() -> launchRuntime(host, prepared));
+                                return;
+                            }
                             if (!"export".equals(data.optString("type"))) return;
                             String filename = data.optString("filename", "project.zip");
                             if (!filename.matches("[a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9 _().-]{1,120}\\.(zip|json)")) filename = "project.zip";
@@ -159,10 +198,76 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean safePath(String path) {
+        if (path.isEmpty() || path.startsWith("/") || path.contains("\\") || path.contains("\u0000")) return false;
+        for (String part : path.split("/")) if (part.isEmpty() || part.equals(".") || part.equals("..")) return false;
+        return true;
+    }
+    private String mime(String path) {
+        String name = path.toLowerCase();
+        if (name.endsWith(".html")) return "text/html";
+        if (name.endsWith(".js") || name.endsWith(".mjs")) return "text/javascript";
+        if (name.endsWith(".css")) return "text/css";
+        if (name.endsWith(".json") || name.endsWith(".webmanifest")) return "application/json";
+        if (name.endsWith(".svg")) return "image/svg+xml";
+        if (name.endsWith(".png")) return "image/png";
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+        if (name.endsWith(".webp")) return "image/webp";
+        if (name.endsWith(".woff2")) return "font/woff2";
+        if (name.endsWith(".woff")) return "font/woff";
+        return "application/octet-stream";
+    }
+    private void launchRuntime(String host, Map<String, byte[]> files) {
+        closeRuntime();
+        runtimeHost = host;
+        runtimeFiles.clear(); runtimeFiles.putAll(files);
+        runtime = new WebView(this);
+        WebSettings s = runtime.getSettings();
+        s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(false); s.setAllowContentAccess(false);
+        s.setJavaScriptCanOpenWindowsAutomatically(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        runtime.setWebChromeClient(new WebChromeClient());
+        runtime.setWebViewClient(new WebViewClient() {
+            @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                if (!"https".equals(u.getScheme()) || !host.equals(u.getHost()))
+                    return new WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+                String path = u.getEncodedPath();
+                try { path = URLDecoder.decode(path.startsWith("/") ? path.substring(1) : path, "UTF-8"); }
+                catch (Exception e) { return null; }
+                if (path.isEmpty()) path = "index.html";
+                if (!safePath(path)) return new WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+                byte[] data = runtimeFiles.get(path);
+                if (data == null) return new WebResourceResponse("text/plain", "UTF-8", 404, "Not found", java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+                Map<String,String> headers = new HashMap<>();
+                headers.put("Cache-Control", "no-store");
+                headers.put("Access-Control-Allow-Origin", "https://" + host);
+                return new WebResourceResponse(mime(path), "UTF-8", 200, "OK", headers, new ByteArrayInputStream(data));
+            }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                return !"https".equals(u.getScheme()) || !host.equals(u.getHost());
+            }
+        });
+        root.addView(runtime);
+        web.setVisibility(android.view.View.GONE);
+        runtime.loadUrl("https://" + host + "/index.html");
+        Toast.makeText(this, "Програма запущена. Назад — до Середовища", Toast.LENGTH_SHORT).show();
+    }
+    private void closeRuntime() {
+        if (runtime != null) {
+            root.removeView(runtime); runtime.stopLoading(); runtime.destroy(); runtime = null;
+        }
+        if (web != null) web.setVisibility(android.view.View.VISIBLE);
+        runtimeFiles.clear(); runtimeHost = "";
+    }
     @Override public void onBackPressed() {
+        if (runtime != null) { closeRuntime(); return; }
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
     @Override protected void onDestroy() {
+        closeRuntime();
         web.destroy();
         super.onDestroy();
     }
