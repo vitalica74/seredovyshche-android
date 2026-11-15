@@ -307,8 +307,8 @@ public class MainActivity extends Activity {
         exit.setTextColor(Color.WHITE);
         exit.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         exit.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        int pad = (int) (12 * getResources().getDisplayMetrics().density);
-        exit.setPadding(pad, 0, pad, 0);
+        int exitPad = (int) (12 * getResources().getDisplayMetrics().density);
+        exit.setPadding(exitPad, 0, exitPad, 0);
         exit.setContentDescription("Повернутися до Середовища");
         exit.setOnClickListener(v -> hideRuntime());
         bar.addView(exit, new LinearLayout.LayoutParams(-2, (int)(42 * getResources().getDisplayMetrics().density)));
