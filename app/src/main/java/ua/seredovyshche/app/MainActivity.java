@@ -394,6 +394,14 @@ public class MainActivity extends Activity {
         runtimeProjectId = projectId;
         runtimeFiles.clear(); runtimeFiles.putAll(files);
         runtime = new WebView(this);
+        
+        Toast.makeText(this,
+    "WEB_MESSAGE_LISTENER: " +
+    WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) +
+    "\nDOCUMENT_START_SCRIPT: " +
+    WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT),
+    Toast.LENGTH_LONG).show();
+    
         WebSettings s = runtime.getSettings();
         s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false); s.setAllowContentAccess(false);
