@@ -322,8 +322,8 @@ public class MainActivity extends Activity {
     }
     private static final String RUNTIME_DOWNLOAD_SCRIPT = """
         (function(){
-          if (window.__svFileBridgeV3) return;
-          window.__svFileBridgeV3 = true;
+          if (window.__svFileBridgeV4) return;
+          window.__svFileBridgeV4 = true;
           var blobs = new Map();
           var create = URL.createObjectURL.bind(URL);
           URL.createObjectURL = function(blob) {
@@ -376,9 +376,17 @@ public class MainActivity extends Activity {
             return originalClick.apply(this,arguments);
           };
           document.addEventListener('click',function(e){
-            var a=e.target && e.target.closest && e.target.closest('a[download]');
+            var target = e.target;
+            if (target && target.closest && target.closest('#exportBtn')) {
+              send('probe',{stage:'Кнопку експорту натиснуто'});
+            }
+            var a=target && target.closest && target.closest('a[download]');
             if(a && saveLink(a)){e.preventDefault();e.stopImmediatePropagation();}
           },true);
+          window.addEventListener('unhandledrejection', function(e){
+            var reason=e.reason;
+            send('error',{message:'JavaScript: '+String(reason && reason.message || reason)});
+          });
         })();
         """;
     private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
@@ -394,14 +402,6 @@ public class MainActivity extends Activity {
         runtimeProjectId = projectId;
         runtimeFiles.clear(); runtimeFiles.putAll(files);
         runtime = new WebView(this);
-        
-        Toast.makeText(this,
-    "WEB_MESSAGE_LISTENER: " +
-    WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) +
-    "\nDOCUMENT_START_SCRIPT: " +
-    WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT),
-    Toast.LENGTH_LONG).show();
-    
         WebSettings s = runtime.getSettings();
         s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false); s.setAllowContentAccess(false);
@@ -435,7 +435,8 @@ public class MainActivity extends Activity {
                             return;
                         }
                         if ("probe".equals(obj.optString("type"))) {
-                            runOnUiThread(() -> Toast.makeText(this, "Експорт: запит отримано", Toast.LENGTH_SHORT).show());
+                            String stage = obj.optString("stage", "Blob перехоплено");
+                            runOnUiThread(() -> Toast.makeText(this, "Експорт: " + stage, Toast.LENGTH_LONG).show());
                             return;
                         }
                         if (!"save".equals(obj.optString("type"))) return;
@@ -471,6 +472,12 @@ public class MainActivity extends Activity {
                 // FileReader reads the Blob inside the PWA origin; Android saves via SAF.
                 view.evaluateJavascript(RUNTIME_DOWNLOAD_SCRIPT, null);
                 if (url.equals("https://" + host + "/index.html")) {
+                    view.evaluateJavascript(
+                        "(function(){return 'bridge='+!!window.SeredovyshcheFiles+" +
+                        "', hook='+!!window.__svFileBridgeV4+" +
+                        "', button='+!!document.getElementById('exportBtn')})()",
+                        state -> Toast.makeText(MainActivity.this,
+                            "Файловий рушій: " + state, Toast.LENGTH_LONG).show());
                     view.evaluateJavascript("String(history.length)", value -> {
                         try { runtimeInitialHistoryLength = Math.max(1, Integer.parseInt(value.replace("\"", ""))); }
                         catch (Exception ignored) { }
