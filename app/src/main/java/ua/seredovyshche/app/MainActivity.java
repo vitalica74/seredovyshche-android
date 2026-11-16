@@ -2,6 +2,7 @@ package ua.seredovyshche.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ActivityNotFoundException;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Base64;
@@ -46,7 +47,7 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final String HOME = "https://appassets.androidplatform.net/assets/web/index.html";
-    private static final int IMPORT_CODE = 41, EXPORT_CODE = 42;
+    private static final int IMPORT_CODE = 41, EXPORT_CODE = 42, RUNTIME_EXPORT_CODE = 43;
     private WebView web;
     private WebView runtime;
     private FrameLayout root;
@@ -60,6 +61,8 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> uploadCallback;
     private byte[] pendingExport;
     private String pendingProjectId;
+    private byte[] pendingRuntimeExport;
+    private String pendingRuntimeFilename;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -90,7 +93,10 @@ public class MainActivity extends Activity {
                 return loader.shouldInterceptRequest(request.getUrl());
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
-                return !request.getUrl().toString().startsWith("https://appassets.androidplatform.net/assets/web/");
+                Uri uri = request.getUrl();
+                if (uri.toString().startsWith("https://appassets.androidplatform.net/assets/web/")) return false;
+                if (request.isForMainFrame() && "https".equals(uri.getScheme())) openExternal(uri.toString());
+                return true;
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -137,6 +143,12 @@ public class MainActivity extends Activity {
                                 runOnUiThread(() -> launchRuntime(projectId, host, prepared));
                                 return;
                             }
+                            if ("openExternal".equals(data.optString("type"))) {
+                                String url = data.optString("url", "");
+                                if (url.startsWith("https://") && url.length() < 2048)
+                                    runOnUiThread(() -> openExternal(url));
+                                return;
+                            }
                             if (!"export".equals(data.optString("type"))) return;
                             String filename = data.optString("filename", "project.zip");
                             if (!filename.matches("[a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9 _().-]{1,120}\\.(zip|json)")) filename = "project.zip";
@@ -160,6 +172,21 @@ public class MainActivity extends Activity {
                         } catch (Exception e) { Toast.makeText(this, "Помилка експорту: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
                     });
         }
+        // External links with target=_blank do not navigate the current WebView.
+        web.setWebViewClient(new WebViewClient() {
+            @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                return loader.shouldInterceptRequest(r.getUrl());
+            }
+            @Override public void onPageFinished(WebView v, String url) {
+                v.evaluateJavascript("(function(){document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.href,location.href)}catch(_){return}if(u.protocol==='https:'&&u.origin!==location.origin){e.preventDefault();window.SeredovyshcheAndroid&&window.SeredovyshcheAndroid.postMessage(JSON.stringify({type:'openExternal',url:u.href}))}},true)})()",null);
+            }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                Uri uri=r.getUrl();
+                if(uri.toString().startsWith("https://appassets.androidplatform.net/assets/web/"))return false;
+                if(r.isForMainFrame()&&"https".equals(uri.getScheme()))openExternal(uri.toString());
+                return true;
+            }
+        });
         web.loadUrl(HOME);
     }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -169,6 +196,34 @@ public class MainActivity extends Activity {
                 uploadCallback.onReceiveValue(resultCode == RESULT_OK && data != null && data.getData() != null ? new Uri[]{data.getData()} : null);
                 uploadCallback = null;
             }
+        } else if (requestCode == RUNTIME_EXPORT_CODE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null && pendingRuntimeExport != null) {
+                try {
+                    Uri uri = data.getData();
+                    try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        if (out == null) throw new Exception("Немає доступу до файлу");
+                        out.write(pendingRuntimeExport);
+                        out.flush();
+                    }
+                    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                    byte[] expected = digest.digest(pendingRuntimeExport);
+                    digest.reset(); int count = 0;
+                    try (InputStream in = getContentResolver().openInputStream(uri)) {
+                        if (in == null) throw new Exception("Неможливо прочитати файл для перевірки");
+                        byte[] buf = new byte[8192]; int n;
+                        while ((n = in.read(buf)) != -1) { digest.update(buf, 0, n); count += n; }
+                    }
+                    if (count != pendingRuntimeExport.length || !Arrays.equals(expected, digest.digest()))
+                        throw new Exception("Контрольна сума не збігається");
+                    Toast.makeText(this, "Файл збережено та перевірено", Toast.LENGTH_LONG).show();
+                } catch (Exception ex) {
+                    Toast.makeText(this, "Помилка збереження: " + ex.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            } else if (resultCode != RESULT_OK) {
+                Toast.makeText(this, "Збереження скасовано", Toast.LENGTH_SHORT).show();
+            }
+            pendingRuntimeExport = null;
+            pendingRuntimeFilename = null;
         } else if (requestCode == EXPORT_CODE) {
             boolean verified = false;
             String reason = "Експорт скасовано";
@@ -214,6 +269,38 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void openExternal(String url) {
+        try {
+            Uri uri = Uri.parse(url);
+            if (!"https".equals(uri.getScheme())) return;
+            startActivity(new Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE));
+        } catch (Exception e) {
+            Toast.makeText(this, "Не вдалося відкрити посилання", Toast.LENGTH_LONG).show();
+        }
+    }
+    private void saveRuntimeFile(String name, String encoded) {
+        try {
+            if (pendingRuntimeExport != null) {
+                Toast.makeText(this, "Спочатку завершіть попереднє збереження", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (encoded.length() > 16_000_000) throw new Exception("Файл завеликий");
+            byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
+            if (bytes.length > 12_000_000) throw new Exception("Файл завеликий");
+            String filename = name.replaceAll("[^a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9 _().-]", "_");
+            if (filename.isEmpty() || filename.length() > 120) filename = "export.json";
+            pendingRuntimeExport = bytes;
+            pendingRuntimeFilename = filename;
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType(filename.endsWith(".json") ? "application/json" : "application/octet-stream");
+            intent.putExtra(Intent.EXTRA_TITLE, filename);
+            startActivityForResult(intent, RUNTIME_EXPORT_CODE);
+        } catch (Exception ex) {
+            pendingRuntimeExport = null;
+            Toast.makeText(this, "Помилка експорту: " + ex.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
     private boolean safePath(String path) {
         if (path.isEmpty() || path.startsWith("/") || path.contains("\\") || path.contains("\u0000")) return false;
         for (String part : path.split("/")) if (part.isEmpty() || part.equals(".") || part.equals("..")) return false;
@@ -233,6 +320,19 @@ public class MainActivity extends Activity {
         if (name.endsWith(".woff")) return "font/woff";
         return "application/octet-stream";
     }
+    private static final String RUNTIME_DOWNLOAD_SCRIPT =
+        "(function(){if(window.__svFileBridge)return;window.__svFileBridge=true;" +
+        "document.addEventListener('click',function(e){" +
+        "var a=e.target.closest&&e.target.closest('a[download]');if(!a)return;" +
+        "var url=a.href;if(!url||!(url.startsWith('blob:')||url.startsWith('data:')))return;" +
+        "e.preventDefault();e.stopImmediatePropagation();" +
+        "fetch(url).then(function(r){if(!r.ok)throw Error('Blob');return r.blob()})" +
+        ".then(function(blob){var reader=new FileReader();reader.onload=function(){" +
+        "var b64=String(reader.result).split(',')[1];" +
+        "if(window.SeredovyshcheFiles)window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'save',filename:a.download||'export.json',base64:b64}));" +
+        "};reader.readAsDataURL(blob)})" +
+        ".catch(function(err){console.error('Seredovyshche export:',err)});" +
+        "},true)})()";
     private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
         // Keep the existing WebView alive when the same program is reopened.
         // This preserves SPA state, unfinished forms and scroll position in memory.
@@ -251,7 +351,37 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false); s.setAllowContentAccess(false);
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        runtime.setWebChromeClient(new WebChromeClient());
+        runtime.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (uploadCallback != null) uploadCallback.onReceiveValue(null);
+                uploadCallback = callback;
+                try {
+                    startActivityForResult(params.createIntent(), IMPORT_CODE);
+                    return true;
+                } catch (Exception e) {
+                    uploadCallback = null;
+                    Toast.makeText(MainActivity.this, "Не вдалося відкрити вибір файлу", Toast.LENGTH_LONG).show();
+                    return false;
+                }
+            }
+        });
+        // A message listener is restricted to the selected PWA's HTTPS origin.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(runtime, "SeredovyshcheFiles",
+                Collections.singleton("https://" + host),
+                (view, message, origin, mainFrame, reply) -> {
+                    if (!mainFrame || message.getData() == null || view != runtime) return;
+                    try {
+                        JSONObject obj = new JSONObject(message.getData());
+                        if (!"save".equals(obj.optString("type"))) return;
+                        String filename = obj.optString("filename", "export.json");
+                        String b64 = obj.getString("base64");
+                        runOnUiThread(() -> saveRuntimeFile(filename, b64));
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(this, "Помилка файлового мосту", Toast.LENGTH_LONG).show());
+                    }
+                });
+        }
         runtimePanel = new LinearLayout(this);
         runtimePanel.setOrientation(LinearLayout.VERTICAL);
         runtimePanel.setBackgroundColor(Color.rgb(18, 25, 40));
@@ -267,6 +397,9 @@ public class MainActivity extends Activity {
         runtimePanel.addView(homeButton, new LinearLayout.LayoutParams(-1, (int)(34 * getResources().getDisplayMetrics().density)));
         runtime.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
+                // Capture downloads created by a PWA via Blob URL + anchor.click().
+                // FileReader reads the Blob inside the PWA origin; Android saves via SAF.
+                view.evaluateJavascript(RUNTIME_DOWNLOAD_SCRIPT, null);
                 if (url.equals("https://" + host + "/index.html")) {
                     view.evaluateJavascript("String(history.length)", value -> {
                         try { runtimeInitialHistoryLength = Math.max(1, Integer.parseInt(value.replace("\"", ""))); }
