@@ -398,8 +398,8 @@ public class MainActivity extends Activity {
                     try {
                         JSONObject obj = new JSONObject(message.getData());
                         if ("error".equals(obj.optString("type"))) {
-                            String message = obj.optString("message", "Невідома помилка");
-                            runOnUiThread(() -> Toast.makeText(this, "Помилка експорту: " + message, Toast.LENGTH_LONG).show());
+                            String exportErrorMessage = obj.optString("message", "Невідома помилка");
+                            runOnUiThread(() -> Toast.makeText(this, "Помилка експорту: " + exportErrorMessage, Toast.LENGTH_LONG).show());
                             return;
                         }
                         if (!"save".equals(obj.optString("type"))) return;
