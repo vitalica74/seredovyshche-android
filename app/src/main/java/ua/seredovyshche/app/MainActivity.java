@@ -320,43 +320,67 @@ public class MainActivity extends Activity {
         if (name.endsWith(".woff")) return "font/woff";
         return "application/octet-stream";
     }
-    private static final String RUNTIME_DOWNLOAD_SCRIPT =
-        "(function(){"  +
-        "if(window.__svFileBridgeV2)return;"  +
-        "window.__svFileBridgeV2=true;"  +
-        "function notifyError(msg){"  +
-        " try{window.SeredovyshcheFiles&&window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'error',message:String(msg)}))}catch(_){}"  +
-        "}"  +
-        "function saveLink(a){"  +
-        " if(!a||!a.hasAttribute('download'))return false;"  +
-        " var url=a.href;"  +
-        " if(!url||!(url.indexOf('blob:')===0||url.indexOf('data:')===0))return false;"  +
-        " try{"  +
-        "  fetch(url).then(function(r){if(!r.ok)throw Error('Не вдалося прочитати Blob');return r.blob()})"  +
-        "  .then(function(blob){"  +
-        "   var reader=new FileReader();"  +
-        "   reader.onerror=function(){notifyError('Не вдалося прочитати файл')};"  +
-        "   reader.onload=function(){"  +
-        "    var result=String(reader.result||'');var comma=result.indexOf(',');"  +
-        "    if(comma<0){notifyError('Неправильний формат файлу');return}"  +
-        "    if(!window.SeredovyshcheFiles){notifyError('Файловий міст недоступний');return}"  +
-        "    window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'save',filename:a.download||'export.json',base64:result.substring(comma+1)}));"  +
-        "   };"  +
-        "   reader.readAsDataURL(blob);"  +
-        "  }).catch(function(err){notifyError(err&&err.message||err)});"  +
-        " }catch(err){notifyError(err&&err.message||err)}"  +
-        " return true;"  +
-        "}"  +
-        "var original=HTMLAnchorElement.prototype.click;"  +
-        "HTMLAnchorElement.prototype.click=function(){"  +
-        " if(saveLink(this))return;"  +
-        " return original.apply(this,arguments);"  +
-        "};"  +
-        "document.addEventListener('click',function(e){"  +
-        " var a=e.target&&e.target.closest&&e.target.closest('a[download]');"  +
-        " if(a&&saveLink(a)){e.preventDefault();e.stopImmediatePropagation()}"  +
-        "},true);"  +
-        "})()" ;
+    private static final String RUNTIME_DOWNLOAD_SCRIPT = """
+        (function(){
+          if (window.__svFileBridgeV3) return;
+          window.__svFileBridgeV3 = true;
+          var blobs = new Map();
+          var create = URL.createObjectURL.bind(URL);
+          URL.createObjectURL = function(blob) {
+            var url = create(blob);
+            if (blob instanceof Blob) blobs.set(url, blob);
+            return url;
+          };
+          var revoke = URL.revokeObjectURL.bind(URL);
+          URL.revokeObjectURL = function(url) {
+            // Keep the Blob reference until a pending export has been read.
+            return revoke(url);
+          };
+          function send(type, payload) {
+            var bridge = window.SeredovyshcheFiles;
+            if (!bridge || !bridge.postMessage) {
+              alert('Середовище: файловий міст недоступний');
+              return false;
+            }
+            bridge.postMessage(JSON.stringify(Object.assign({type:type},payload||{})));
+            return true;
+          }
+          function saveLink(a) {
+            if (!a || !a.hasAttribute('download')) return false;
+            var url = a.href;
+            if (!url || !(url.startsWith('blob:') || url.startsWith('data:'))) return false;
+            if (!send('probe',{})) return true;
+            var filename = a.download || 'export.json';
+            function read(blob) {
+              var reader = new FileReader();
+              reader.onerror = function(){send('error',{message:'Не вдалося прочитати Blob'})};
+              reader.onload = function(){
+                var data = String(reader.result || '');
+                var comma = data.indexOf(',');
+                if (comma < 0) {send('error',{message:'Неправильний формат даних'});return;}
+                send('save',{filename:filename,base64:data.substring(comma+1)});
+                blobs.delete(url);
+              };
+              reader.readAsDataURL(blob);
+            }
+            try {
+              if (blobs.has(url)) read(blobs.get(url));
+              else fetch(url).then(function(r){if(!r.ok)throw Error('Blob недоступний');return r.blob()})
+                .then(read).catch(function(e){send('error',{message:String(e)})});
+            } catch(e) {send('error',{message:String(e)})}
+            return true;
+          }
+          var originalClick = HTMLAnchorElement.prototype.click;
+          HTMLAnchorElement.prototype.click = function(){
+            if (saveLink(this)) return;
+            return originalClick.apply(this,arguments);
+          };
+          document.addEventListener('click',function(e){
+            var a=e.target && e.target.closest && e.target.closest('a[download]');
+            if(a && saveLink(a)){e.preventDefault();e.stopImmediatePropagation();}
+          },true);
+        })();
+        """;
     private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
         // Keep the existing WebView alive when the same program is reopened.
         // This preserves SPA state, unfinished forms and scroll position in memory.
@@ -402,6 +426,10 @@ public class MainActivity extends Activity {
                             runOnUiThread(() -> Toast.makeText(this, "Помилка експорту: " + exportErrorMessage, Toast.LENGTH_LONG).show());
                             return;
                         }
+                        if ("probe".equals(obj.optString("type"))) {
+                            runOnUiThread(() -> Toast.makeText(this, "Експорт: запит отримано", Toast.LENGTH_SHORT).show());
+                            return;
+                        }
                         if (!"save".equals(obj.optString("type"))) return;
                         String filename = obj.optString("filename", "export.json");
                         String b64 = obj.getString("base64");
@@ -410,6 +438,11 @@ public class MainActivity extends Activity {
                         runOnUiThread(() -> Toast.makeText(this, "Помилка файлового мосту", Toast.LENGTH_LONG).show());
                     }
                 });
+        }
+        // Install before application scripts run; onPageFinished remains a fallback.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(runtime, RUNTIME_DOWNLOAD_SCRIPT,
+                    Collections.singleton("https://" + host));
         }
         runtimePanel = new LinearLayout(this);
         runtimePanel.setOrientation(LinearLayout.VERTICAL);
