@@ -322,13 +322,22 @@ public class MainActivity extends Activity {
     }
     private static final String RUNTIME_DOWNLOAD_SCRIPT = """
         (function(){
-          if (window.__svFileBridgeV4) return;
-          window.__svFileBridgeV4 = true;
+          if (window.__svFileBridgeV5) return;
+          window.__svFileBridgeV5 = true;
           var blobs = new Map();
+          var lastExportClick = 0;
+          var lastBlobURL = 0;
+          function trace(stage) {
+            if (Date.now() - lastExportClick < 10000) send('probe',{stage:stage});
+          }
           var create = URL.createObjectURL.bind(URL);
           URL.createObjectURL = function(blob) {
             var url = create(blob);
-            if (blob instanceof Blob) blobs.set(url, blob);
+            if (blob instanceof Blob) {
+              blobs.set(url, blob);
+              lastBlobURL = Date.now();
+              trace('Blob URL створено (' + blob.size + ' байт)');
+            }
             return url;
           };
           var revoke = URL.revokeObjectURL.bind(URL);
@@ -349,7 +358,8 @@ public class MainActivity extends Activity {
             if (!a || !a.hasAttribute('download')) return false;
             var url = a.href;
             if (!url || !(url.startsWith('blob:') || url.startsWith('data:'))) return false;
-            if (!send('probe',{})) return true;
+            trace('Посилання download перехоплено');
+            if (!window.SeredovyshcheFiles) return true;
             var filename = a.download || 'export.json';
             function read(blob) {
               var reader = new FileReader();
@@ -358,6 +368,7 @@ public class MainActivity extends Activity {
                 var data = String(reader.result || '');
                 var comma = data.indexOf(',');
                 if (comma < 0) {send('error',{message:'Неправильний формат даних'});return;}
+                trace('Blob прочитано; передаємо Android');
                 send('save',{filename:filename,base64:data.substring(comma+1)});
                 blobs.delete(url);
               };
@@ -378,7 +389,12 @@ public class MainActivity extends Activity {
           document.addEventListener('click',function(e){
             var target = e.target;
             if (target && target.closest && target.closest('#exportBtn')) {
+              lastExportClick = Date.now();
+              lastBlobURL = 0;
               send('probe',{stage:'Кнопку експорту натиснуто'});
+              setTimeout(function(){
+                if (lastBlobURL === 0) trace('За 2 с Blob URL не створено');
+              },2000);
             }
             var a=target && target.closest && target.closest('a[download]');
             if(a && saveLink(a)){e.preventDefault();e.stopImmediatePropagation();}
@@ -474,7 +490,7 @@ public class MainActivity extends Activity {
                 if (url.equals("https://" + host + "/index.html")) {
                     view.evaluateJavascript(
                         "(function(){return 'bridge='+!!window.SeredovyshcheFiles+" +
-                        "', hook='+!!window.__svFileBridgeV4+" +
+                        "', hook='+!!window.__svFileBridgeV5+" +
                         "', button='+!!document.getElementById('exportBtn')})()",
                         state -> Toast.makeText(MainActivity.this,
                             "Файловий рушій: " + state, Toast.LENGTH_LONG).show());
