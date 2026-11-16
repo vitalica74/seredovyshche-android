@@ -321,18 +321,42 @@ public class MainActivity extends Activity {
         return "application/octet-stream";
     }
     private static final String RUNTIME_DOWNLOAD_SCRIPT =
-        "(function(){if(window.__svFileBridge)return;window.__svFileBridge=true;" +
-        "document.addEventListener('click',function(e){" +
-        "var a=e.target.closest&&e.target.closest('a[download]');if(!a)return;" +
-        "var url=a.href;if(!url||!(url.startsWith('blob:')||url.startsWith('data:')))return;" +
-        "e.preventDefault();e.stopImmediatePropagation();" +
-        "fetch(url).then(function(r){if(!r.ok)throw Error('Blob');return r.blob()})" +
-        ".then(function(blob){var reader=new FileReader();reader.onload=function(){" +
-        "var b64=String(reader.result).split(',')[1];" +
-        "if(window.SeredovyshcheFiles)window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'save',filename:a.download||'export.json',base64:b64}));" +
-        "};reader.readAsDataURL(blob)})" +
-        ".catch(function(err){console.error('Seredovyshche export:',err)});" +
-        "},true)})()";
+        "(function(){"  +
+        "if(window.__svFileBridgeV2)return;"  +
+        "window.__svFileBridgeV2=true;"  +
+        "function notifyError(msg){"  +
+        " try{window.SeredovyshcheFiles&&window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'error',message:String(msg)}))}catch(_){}"  +
+        "}"  +
+        "function saveLink(a){"  +
+        " if(!a||!a.hasAttribute('download'))return false;"  +
+        " var url=a.href;"  +
+        " if(!url||!(url.indexOf('blob:')===0||url.indexOf('data:')===0))return false;"  +
+        " try{"  +
+        "  fetch(url).then(function(r){if(!r.ok)throw Error('Не вдалося прочитати Blob');return r.blob()})"  +
+        "  .then(function(blob){"  +
+        "   var reader=new FileReader();"  +
+        "   reader.onerror=function(){notifyError('Не вдалося прочитати файл')};"  +
+        "   reader.onload=function(){"  +
+        "    var result=String(reader.result||'');var comma=result.indexOf(',');"  +
+        "    if(comma<0){notifyError('Неправильний формат файлу');return}"  +
+        "    if(!window.SeredovyshcheFiles){notifyError('Файловий міст недоступний');return}"  +
+        "    window.SeredovyshcheFiles.postMessage(JSON.stringify({type:'save',filename:a.download||'export.json',base64:result.substring(comma+1)}));"  +
+        "   };"  +
+        "   reader.readAsDataURL(blob);"  +
+        "  }).catch(function(err){notifyError(err&&err.message||err)});"  +
+        " }catch(err){notifyError(err&&err.message||err)}"  +
+        " return true;"  +
+        "}"  +
+        "var original=HTMLAnchorElement.prototype.click;"  +
+        "HTMLAnchorElement.prototype.click=function(){"  +
+        " if(saveLink(this))return;"  +
+        " return original.apply(this,arguments);"  +
+        "};"  +
+        "document.addEventListener('click',function(e){"  +
+        " var a=e.target&&e.target.closest&&e.target.closest('a[download]');"  +
+        " if(a&&saveLink(a)){e.preventDefault();e.stopImmediatePropagation()}"  +
+        "},true);"  +
+        "})()" ;
     private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
         // Keep the existing WebView alive when the same program is reopened.
         // This preserves SPA state, unfinished forms and scroll position in memory.
@@ -373,6 +397,11 @@ public class MainActivity extends Activity {
                     if (!mainFrame || message.getData() == null || view != runtime) return;
                     try {
                         JSONObject obj = new JSONObject(message.getData());
+                        if ("error".equals(obj.optString("type"))) {
+                            String message = obj.optString("message", "Невідома помилка");
+                            runOnUiThread(() -> Toast.makeText(this, "Помилка експорту: " + message, Toast.LENGTH_LONG).show());
+                            return;
+                        }
                         if (!"save".equals(obj.optString("type"))) return;
                         String filename = obj.optString("filename", "export.json");
                         String b64 = obj.getString("base64");
