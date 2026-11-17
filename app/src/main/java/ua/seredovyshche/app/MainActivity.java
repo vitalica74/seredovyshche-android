@@ -215,7 +215,11 @@ public class MainActivity extends Activity {
                     }
                     if (count != pendingRuntimeExport.length || !Arrays.equals(expected, digest.digest()))
                         throw new Exception("Контрольна сума не збігається");
-                    Toast.makeText(this, "Файл збережено та перевірено", Toast.LENGTH_LONG).show();
+                    new android.app.AlertDialog.Builder(this)
+                        .setTitle("Збереження завершено")
+                        .setMessage("Файл «" + pendingRuntimeFilename + "» записано та перевірено (SHA-256).")
+                        .setPositiveButton("OK", null)
+                        .show();
                 } catch (Exception ex) {
                     Toast.makeText(this, "Помилка збереження: " + ex.getMessage(), Toast.LENGTH_LONG).show();
                 }
@@ -324,6 +328,21 @@ public class MainActivity extends Activity {
         (function(){
           if (window.__svDownloadV7) return;
           window.__svDownloadV7 = true;
+          // WebView's picker may be exposed but cannot complete a file save.
+          // Reject explicitly so apps with a download fallback can use it.
+          try {
+            Object.defineProperty(window, 'showSaveFilePicker', {
+              configurable: true,
+              writable: true,
+              value: function(){
+                return Promise.reject(new DOMException(
+                  'Use the browser download fallback in Seredovyshche',
+                  'NotSupportedError'));
+              }
+            });
+          } catch (_) {
+            // Keep native behavior if this property cannot be overridden.
+          }
           const blobs = new Map();
           const originalCreate = URL.createObjectURL.bind(URL);
           const originalRevoke = URL.revokeObjectURL.bind(URL);
