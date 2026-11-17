@@ -322,66 +322,64 @@ public class MainActivity extends Activity {
     }
     private static final String RUNTIME_DOWNLOAD_SCRIPT = """
         (function(){
-          if (window.__svFileBridgeV6) return;
-          window.__svFileBridgeV6 = true;
-          var blobs = new Map();
-          var create = URL.createObjectURL.bind(URL);
-          URL.createObjectURL = function(blob) {
-            var url = create(blob);
-            if (blob instanceof Blob) {
-              blobs.set(url, blob);
-            }
+          if (window.__svDownloadV7) return;
+          window.__svDownloadV7 = true;
+          const blobs = new Map();
+          const originalCreate = URL.createObjectURL.bind(URL);
+          const originalRevoke = URL.revokeObjectURL.bind(URL);
+          URL.createObjectURL = function(value) {
+            const url = originalCreate(value);
+            if (value instanceof Blob) blobs.set(url, value);
             return url;
           };
-          var revoke = URL.revokeObjectURL.bind(URL);
+          // Keep a reference briefly: some apps revoke immediately after a.click().
           URL.revokeObjectURL = function(url) {
-            // Keep the Blob reference until a pending export has been read.
-            return revoke(url);
-          };
-          function send(type, payload) {
-            var bridge = window.SeredovyshcheFiles;
-            if (!bridge || !bridge.postMessage) {
-              alert('Середовище: файловий міст недоступний');
-              return false;
+            if (blobs.has(url)) {
+              setTimeout(function(){ blobs.delete(url); originalRevoke(url); }, 30000);
+              return;
             }
-            bridge.postMessage(JSON.stringify(Object.assign({type:type},payload||{})));
+            return originalRevoke(url);
+          };
+          function post(type, payload) {
+            const bridge = window.SeredovyshcheFiles;
+            if (!bridge || typeof bridge.postMessage !== 'function') return false;
+            bridge.postMessage(JSON.stringify(Object.assign({type:type}, payload||{})));
             return true;
           }
-          function saveLink(a) {
+          function save(a) {
             if (!a || !a.hasAttribute('download')) return false;
-            var url = a.href;
-            if (!url || !(url.startsWith('blob:') || url.startsWith('data:'))) return false;
-            if (!window.SeredovyshcheFiles) return true;
-            var filename = a.download || 'export.json';
+            const url = a.href || '';
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) return false;
+            if (!window.SeredovyshcheFiles) return false;
+            const filename = a.download || 'download';
             function read(blob) {
-              var reader = new FileReader();
-              reader.onerror = function(){send('error',{message:'Не вдалося прочитати Blob'})};
+              const reader = new FileReader();
+              reader.onerror = function(){post('error',{message:'Не вдалося прочитати файл'});};
               reader.onload = function(){
-                var data = String(reader.result || '');
-                var comma = data.indexOf(',');
-                if (comma < 0) {send('error',{message:'Неправильний формат даних'});return;}
-                send('save',{filename:filename,base64:data.substring(comma+1)});
+                const result = String(reader.result||'');
+                const comma = result.indexOf(',');
+                if (comma<0) {post('error',{message:'Некоректні дані файлу'});return;}
+                post('save',{filename:filename,base64:result.substring(comma+1)});
                 blobs.delete(url);
               };
               reader.readAsDataURL(blob);
             }
             try {
               if (blobs.has(url)) read(blobs.get(url));
-              else fetch(url).then(function(r){if(!r.ok)throw Error('Blob недоступний');return r.blob()})
-                .then(read).catch(function(e){send('error',{message:String(e)})});
-            } catch(e) {send('error',{message:String(e)})}
+              else fetch(url).then(function(r){if(!r.ok)throw Error('Файл недоступний');return r.blob();})
+                .then(read).catch(function(e){post('error',{message:String(e)});});
+            } catch(e) {post('error',{message:String(e)});}
             return true;
           }
-          var originalClick = HTMLAnchorElement.prototype.click;
+          const originalClick = HTMLAnchorElement.prototype.click;
           HTMLAnchorElement.prototype.click = function(){
-            if (saveLink(this)) return;
-            return originalClick.apply(this,arguments);
+            if (save(this)) return;
+            return originalClick.apply(this, arguments);
           };
-          document.addEventListener('click',function(e){
-            var target = e.target;
-            var a=target && target.closest && target.closest('a[download]');
-            if(a && saveLink(a)){e.preventDefault();e.stopImmediatePropagation();}
-          },true);
+          document.addEventListener('click', function(e){
+            const a = e.target && e.target.closest && e.target.closest('a[download]');
+            if (a && save(a)) {e.preventDefault();e.stopImmediatePropagation();}
+          }, true);
         })();
         """;
     private void launchRuntime(String projectId, String host, Map<String, byte[]> files) {
